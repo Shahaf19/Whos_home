@@ -43,8 +43,7 @@ Two separate networks, not one:
 
 `list_devices.py` logs into the Xiaomi and prints what's connected. Four steps:
 
-1. **Reads the password** from the `ROUTER_PASSWORD` environment variable, so it never
-   sits in the file.
+1. **Reads the password** from the `ROUTER_PASSWORD` environment variable.
 2. **Proves we know it, without sending it.** The router won't take a plain password.
    So the script invents a one-time random string (a *nonce*), scrambles it together with
    the password through SHA-1 — easy to compute, effectively impossible to reverse — and
