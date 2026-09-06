@@ -1,4 +1,7 @@
-"""Log into the router and print the list of connected devices."""
+"""Log into the router and print the connected devices, over and over.
+
+Step 2: watch whether devices appear and disappear steadily. Ctrl+C to stop.
+"""
 
 import hashlib
 import os
@@ -19,30 +22,27 @@ MIWIFI_SALT = "a2ffa5c9be07488bbb04a3a47d3c5f6a"
 
 TIMEOUT = 10
 
+# How long to wait between rounds. Turn it down while testing.
+POLL_SECONDS = 3
+
 
 def sha1(text):
     """Scramble text into a fixed-length value that cannot be reversed."""
     return hashlib.sha1(text.encode()).hexdigest()
 
 
-password = os.environ.get("ROUTER_PASSWORD")
-if not password:
-    raise SystemExit(
-        'ROUTER_PASSWORD is not set. In PowerShell:\n'
-        '    $env:ROUTER_PASSWORD = "your router admin password"'
-    )
+def log_in(password):
+    """Exchange the password for a short-lived token."""
+    # A one-time string, so the proof below is never the same twice. Without it,
+    # anyone who recorded one login could replay it forever.
+    nonce = f"0_{ROUTER_MAC}_{int(time.time())}_{random.randint(1000, 10000)}"
 
-# A one-time string, so the proof below is never the same twice. Without it,
-# anyone who recorded one login could replay it forever.
-nonce = f"0_{ROUTER_MAC}_{int(time.time())}_{random.randint(1000, 10000)}"
+    # Salt on the inside, nonce on the outside. The router runs the same sum
+    # against the password it has stored; matching results prove we knew it.
+    # The password itself never leaves this machine.
+    proof = sha1(nonce + sha1(password + MIWIFI_SALT))
 
-# Salt on the inside, nonce on the outside. The router runs the same sum
-# against the password it has stored; matching results prove we knew it.
-# The password itself never leaves this machine.
-proof = sha1(nonce + sha1(password + MIWIFI_SALT))
-
-try:
-    login_reply = requests.post(
+    reply = requests.post(
         f"http://{ROUTER_IP}/cgi-bin/luci/api/xqsystem/login",
         data={
             "username": "admin",
@@ -53,26 +53,67 @@ try:
         timeout=TIMEOUT,
     ).json()
 
-    if login_reply.get("code") != 0:
-        raise SystemExit(f"The router refused the login: {login_reply}")
+    if reply.get("code") != 0:
+        raise SystemExit(f"The router refused the login: {reply}")
 
     # A short-lived pass. From here on the password is not needed again.
-    token = login_reply["token"]
+    return reply["token"]
 
-    devices_reply = requests.get(
-        f"http://{ROUTER_IP}/cgi-bin/luci/;stok={token}/api/misystem/devicelist",
-        timeout=TIMEOUT,
-    ).json()
 
-    if devices_reply.get("code") != 0:
-        raise SystemExit(f"The router would not give the device list: {devices_reply}")
+password = os.environ.get("ROUTER_PASSWORD")
+if not password:
+    raise SystemExit(
+        'ROUTER_PASSWORD is not set. In PowerShell:\n'
+        '    $env:ROUTER_PASSWORD = "your router admin password"'
+    )
 
+try:
+    token = log_in(password)
 except requests.exceptions.RequestException as problem:
-    # Reaching the router failed outright. Say so - never fall through to an
-    # empty list, which would read as "nobody is home".
+    # Can't reach the router at all on the way in. Stop, rather than pretend.
     raise SystemExit(f"Could not reach the router at {ROUTER_IP}: {problem}")
 
-for device in devices_reply["list"]:
-    # 'ip' is a list, because a device can hold more than one address.
-    address = device["ip"][0]["ip"]
-    print(device["name"], address, device["mac"])
+# What the last round saw, as MAC -> name. None means no round has happened
+# yet. Only ever holds one round; nothing accumulates.
+previous = None
+
+while True:
+    now = time.strftime("%H:%M:%S")
+
+    try:
+        devices_reply = requests.get(
+            f"http://{ROUTER_IP}/cgi-bin/luci/;stok={token}/api/misystem/devicelist",
+            timeout=TIMEOUT,
+        ).json()
+
+        if devices_reply.get("code") != 0:
+            # Most likely the token expired. Get a new one, report next round.
+            print(now, "token rejected, logging in again")
+            token = log_in(password)
+            time.sleep(POLL_SECONDS)
+            continue
+
+    except requests.exceptions.RequestException as problem:
+        # We cannot tell who is home. Leave 'previous' untouched - treating a
+        # failed round as an empty house would print a departure for everyone.
+        print(now, "can't tell -", problem)
+        time.sleep(POLL_SECONDS)
+        continue
+
+    # Identify devices by MAC, not name - names are not guaranteed unique.
+    current = {}
+    for device in devices_reply["list"]:
+        current[device["mac"]] = device["name"]
+
+    if previous is None:
+        print(now, "watching:", ", ".join(current.values()))
+    else:
+        for mac in current:
+            if mac not in previous:
+                print(now, "ARRIVED", current[mac], mac)
+        for mac in previous:
+            if mac not in current:
+                print(now, "LEFT   ", previous[mac], mac)
+
+    previous = current
+    time.sleep(POLL_SECONDS)
