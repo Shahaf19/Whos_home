@@ -11,76 +11,107 @@ Built one step at a time. Each step gets added below.
 
 ---
 
-## Step 1 — can we get a device list out of the router at all? ✅ Works
+## Step 1 — get a device list out of the router ✅
 
-There's no standard way to ask a router "who's connected?" — every manufacturer invented
-their own, and some don't let you ask at all. So this got settled before building
-anything else.
+There's no standard way to ask a router "who's connected?" Every manufacturer invented
+their own, and some don't let you ask at all. So this had to be settled before building
+anything.
 
-### Working out what we're dealing with
+### Working out what I'm dealing with
 
-
-| Query | What it was asking | What came back |
+| Question | How I asked | Answer |
 |---|---|---|
-| `Get-NetIPConfiguration` | Which box is this PC using as its router? | Gateway `192.168.68.1` |
-| `arp -a` | Who else is on this network? | The handful of devices this PC had recently talked to |
-| `curl http://192.168.68.1/` | What make is that box? Brand decides the whole approach. | A page loading `tpEncrypt.js` → TP-Link |
-| `tracert -d -h 4 8.8.8.8` | Is that box actually the way out to the internet? | No. First stop was `192.168.31.1` — something else sits in between |
-| `curl http://192.168.31.1/` | Then what is *this* one? | Page title 小米路由器 ("Xiaomi Router") → the real router |
-| `.../api/xqsystem/init_info` | Exact model and firmware — decides whether a known way in exists | `xiaomi.router.ra72`, firmware `1.0.122`, Chinese region. No password needed |
-| `.../api/xqsystem/router_info` | Will it hand over private data, and is there a way to ask? | `{"code":401,"msg":"Invalid token"}` → "I'll tell you, but log in first" |
+| Which box is my PC using as its router? | `Get-NetIPConfiguration` | Me at `192.168.31.201`, gateway `192.168.31.1` |
+| Is that box actually the way out to the internet? | `tracert -d -h 4 8.8.8.8` | Yes — hop 1 is the gateway itself |
+| What make is it? | `curl.exe http://192.168.31.1/` | Page title 小米路由器 ("Xiaomi Router") |
+| Which model, and will it talk without a password? | `api/xqsystem/init_info` | `xiaomi.router.ra72`, firmware `1.0.122`. Answers with no password |
+| How do I ask it for real data? | Chrome, F12 → Network tab, then log in | See below |
 
-### What we found
+The Network tab was the one that mattered. It shows every request the router's own admin
+page makes — so instead of guessing, I watched the page do the work and copied it. Two
+things fell out:
 
-Two separate networks, not one:
+- **The login page loads `sha1.js`.** A login page only needs a hash function if it plans
+  to scramble the password in the browser and send the result. So the router never
+  receives the actual password — which told me the shape of the login before I wrote any
+  code.
+- **Every logged-in request has the same shape:**
+  `http://192.168.31.1/cgi-bin/luci/;stok=<token>/api/<module>/<question>`
+
+`api/misystem/devicelist` is the one that returns connected devices — `mac`, `name`, `ip`
+and `online` for each.
+
+### Two networks, not one
 
 | | Address | What it is |
 |---|---|---|
-| **Xiaomi** | `192.168.31.1` | The actual router. Everything reaches the internet through it. |
-| **Deco S7** | `192.168.68.1` | Sold as an extender, but runs its own separate network behind the Xiaomi. It shows up on the Xiaomi as a single ordinary device at `192.168.31.89`. |
+| **Xiaomi** | `192.168.31.1` | The real router. Everything reaches the internet through it. |
+| **Deco S7** | `192.168.68.1` | Sold as an extender, but runs its own separate network behind the Xiaomi. |
+
+The Deco shows up on the Xiaomi as one ordinary device at `192.168.31.89`. Anything
+connected *through* it is invisible — the Xiaomi genuinely doesn't know those devices
+exist, it just sees one box using a lot of bandwidth. My PC has moved between the two
+networks on its own, without me touching anything.
 
 ### The script
 
-`list_devices.py` logs into the Xiaomi and prints what's connected. Four steps:
+`list_devices.py`. Five things in order:
 
-1. **Reads the password** from the `ROUTER_PASSWORD` environment variable.
-2. **Proves we know it, without sending it.** The router won't take a plain password.
-   So the script invents a one-time random string (a *nonce*), scrambles it together with
-   the password through SHA-1 — easy to compute, effectively impossible to reverse — and
-   sends only the scrambled result. The router runs the same sum against the password it
-   has stored; matching results prove we knew it. The nonce is what stops anyone who
-   recorded the exchange from replaying it later.
-3. **Gets a token** (`stok`) back — a temporary pass, so the password step happens once.
-4. **Asks for the device list** with that token, and prints name / IP / MAC.
+1. **Reads the password** from the `ROUTER_PASSWORD` environment variable. Never in the
+   file — git remembers everything, so a password committed once is in the history
+   forever.
+2. **Proves I know it, without sending it.** Builds `SHA1(nonce + SHA1(password + salt))`,
+   where the nonce is a one-time string. Only the nonce and the result get sent; the
+   router runs the same sum against what it has stored and compares. The password never
+   leaves this machine. The nonce is there so the same number is never sent twice.
+3. **Gets a token back**, so the password step happens once.
+4. **Asks `devicelist`** with that token.
+5. **Prints** name, IP and MAC per device.
 
-Both requests have timeouts. Anything that fails — no password set, router unreachable,
-login refused — prints what went wrong and exits non-zero rather than pretending it
-returned an empty house.
+The salt in the code is a fixed string built into MiWiFi firmware — identical on every
+Xiaomi router and published in a JavaScript file anyone can download. It's in the file
+because it genuinely isn't a secret.
 
-### Tests run
+### Tests
 
-1. **No password set** → clear error message. Checked the failure path before trusting
-   the success path.
-2. **Wrong password on purpose** → router replied `not auth`. This mattered: it proved
-   the request was built correctly and the router had actually checked it. A malformed
-   request fails differently. Only unknown left was the password itself.
-3. **Real password** → 4 devices, including this PC at the address we already knew.
-4. **iPhone WiFi off, waited, re-ran** → iPhone gone, 4 down to 3. The one that decided
-   the project: proves the router reports who's connected *right now*, not everything
-   it's ever seen.
+| Test | Result |
+|---|---|
+| No password set | Clear message, nothing else |
+| Wrong password on purpose | Router refused. Proves the request was built right and was actually checked — a malformed request fails differently |
+| WiFi off entirely | Fails instantly, clear message |
+| Pointed at a dead address | Waits 10s for the timeout, then a clear message |
+| Real password | Four devices, including this PC at the address I already knew |
+| iPhone WiFi off, re-ran | Gone immediately. The test that decided the project — the router reports who's connected *now*, not everything it's ever seen |
 
-### Open problems
+Every failure prints **nothing** about devices. Not an empty list, not a zero — nothing at
+all. "Can't tell" must never look like "nobody home."
 
-- **Deco blind spot.** The Xiaomi can't see anything connected through the Deco, so
-  the whole house currently shows as 3 devices. Needs deciding: query both boxes and
-  combine, or reconfigure the Deco so there's only one network.
+### Still open
+
+- **The Deco blind spot.** Deferred, not solved. Either query both boxes and merge the
+  results, or put the Deco into bridge mode so there's only one network. Decide after
+  step 2.
+- **Token expiry.** The token dies eventually. Doesn't matter yet — the script logs in and
+  exits — but a version that runs for days has to notice a rejected token and log in
+  again, without reporting an empty house while it does.
+- **Two devices use invented MAC addresses.** Apple devices make up a MAC per network for
+  privacy. Stable here, so matching devices to people will work — but if someone toggles
+  the private-address setting they get a new one and silently stop being recognised.
+- **Unverified parts of the nonce.** It contains the router's MAC and a timestamp. I don't
+  know whether the router reads either one; I'm copying the format because it works.
+- **Only the polite departure is tested.** Turning WiFi off makes the phone announce it's
+  leaving, so the router drops it instantly — that's why the test was immediate. Actually
+  walking out of the house doesn't announce anything; the phone drifts out of range and
+  the router waits for a timeout before deciding it's gone. That delay is the real lag on
+  the tracker and it's still unmeasured. Step 2 should show it.
 
 ### Running it
 
-```bash
-export ROUTER_PASSWORD="..."      # bash
-$env:ROUTER_PASSWORD = "..."      # PowerShell
+```powershell
+$env:ROUTER_PASSWORD = Read-Host "Router password"
 python list_devices.py
 ```
 
+Typing the password directly with `$env:ROUTER_PASSWORD = "..."` also works, but PowerShell
+saves it to your command history file in plain text. `Read-Host` prompts instead.
 

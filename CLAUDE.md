@@ -12,7 +12,7 @@ Current state only. No history, no database.
 
 ## Working style
 I'm a beginner and want to understand what I'm building.
-- One small step at a time, even within each logical part - dont make a whole step at once. buld it naturally.
+- One small step at a time, even within each logical part - dont make a whole step at once. buld it naturally, yet be precised, deliberate and don't get too far out.
 - Explain what a piece does and why, before writing it.
 - Ask rather than guess when something about my setup matters.
 - Don't add features I didn't ask for.
@@ -27,14 +27,18 @@ I'm a beginner and want to understand what I'm building.
   doesn't know what router I own.
 - Router unreachable should show as "can't tell," not "nobody home."
 - Develop on my laptop, deploy to the Pi. Nothing in the code changes.
+- The Deco runs its own network behind the Xiaomi, so anything connected
+  through it is invisible to us. Deferred until after step 2: either query
+  both boxes and merge, or put the Deco into bridge mode.
 
 ## Steps
-1. Get a list of connected devices out of the router and print it.  <- here
-2. Let it run an hour; check whether devices appear and disappear steadily.
+1. Get a list of connected devices out of the router and print it.
+2. Let it run an hour; check whether devices appear and disappear steadily.  <- here
 3. Map addresses to people so it prints names.
 4. Serve it as a web page; open it on my phone at home.
 5. Run it on the Pi, starting automatically on boot.
 6. Add the mesh VPN so the same page works from outside the house.
 
 ## Status
-Step 1. I don't yet know how my router exposes its device list.
+Step 2. Step 1 works: the Xiaomi at 192.168.31.1 answers
+api/misystem/devicelist after a hashed-password login. Details in the README.
