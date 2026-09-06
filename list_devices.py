@@ -1,12 +1,14 @@
-"""Log into the router and print the connected devices, over and over.
+"""Say who is home, by matching connected devices against people.json.
 
-Step 2: watch whether devices appear and disappear steadily. Ctrl+C to stop.
+Prints only when someone arrives or leaves. Ctrl+C to stop.
 """
 
 import hashlib
+import json
 import os
 import random
 import time
+from pathlib import Path
 
 import requests
 
@@ -25,10 +27,42 @@ TIMEOUT = 10
 # How long to wait between rounds. Turn it down while testing.
 POLL_SECONDS = 3
 
+# Who lives here and which devices are theirs. Sits next to this script, so it
+# is found no matter which folder the program was started from.
+PEOPLE_FILE = Path(__file__).with_name("people.json")
+
 
 def sha1(text):
     """Scramble text into a fixed-length value that cannot be reversed."""
     return hashlib.sha1(text.encode()).hexdigest()
+
+
+def load_people(path):
+    """Read the people file. Gives back person -> list of device MACs."""
+    if not path.exists():
+        raise SystemExit(
+            f"{path.name} not found. Copy people.example.json to {path.name} "
+            "and fill in who lives here and which devices are theirs."
+        )
+
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as problem:
+        raise SystemExit(f"{path.name} is not valid JSON: {problem}")
+
+
+def index_by_mac(people):
+    """Flip person -> [devices] into device -> person.
+
+    The file is written the way a human thinks about it. The router hands us
+    a MAC and asks whose it is, so we need it the other way round.
+    """
+    by_mac = {}
+    for person, macs in people.items():
+        for mac in macs:
+            # Upper case on both sides, so 9e:23 matches 9E:23.
+            by_mac[mac.upper()] = person
+    return by_mac
 
 
 def log_in(password):
@@ -67,14 +101,21 @@ if not password:
         '    $env:ROUTER_PASSWORD = "your router admin password"'
     )
 
+# Load this before touching the network, so a typo in the file fails at once
+# rather than after a round trip to the router.
+people = load_people(PEOPLE_FILE)
+mac_to_person = index_by_mac(people)
+print("People:", ", ".join(people))
+
 try:
     token = log_in(password)
 except requests.exceptions.RequestException as problem:
     # Can't reach the router at all on the way in. Stop, rather than pretend.
     raise SystemExit(f"Could not reach the router at {ROUTER_IP}: {problem}")
 
-# What the last round saw, as MAC -> name. None means no round has happened
-# yet. Only ever holds one round; nothing accumulates.
+# What the last round saw: people who were home, plus unrecognised devices.
+# None means no round has happened yet. Only ever holds one round; nothing
+# accumulates.
 previous = None
 
 while True:
@@ -100,20 +141,26 @@ while True:
         time.sleep(POLL_SECONDS)
         continue
 
-    # Identify devices by MAC, not name - names are not guaranteed unique.
+    # Who is here, plus anything we don't recognise. Keyed by person for known
+    # devices, so someone with two devices on only counts once.
     current = {}
     for device in devices_reply["list"]:
-        current[device["mac"]] = device["name"]
+        mac = device["mac"].upper()
+        person = mac_to_person.get(mac)
+        if person:
+            current[person] = person
+        else:
+            current[mac] = f"? {device['name']} {mac}"
 
     if previous is None:
-        print(now, "watching:", ", ".join(current.values()))
+        print(now, "home:", ", ".join(current.values()))
     else:
-        for mac in current:
-            if mac not in previous:
-                print(now, "ARRIVED", current[mac], mac)
-        for mac in previous:
-            if mac not in current:
-                print(now, "LEFT   ", previous[mac], mac)
+        for key in current:
+            if key not in previous:
+                print(now, "ARRIVED", current[key])
+        for key in previous:
+            if key not in current:
+                print(now, "LEFT   ", previous[key])
 
     previous = current
     time.sleep(POLL_SECONDS)

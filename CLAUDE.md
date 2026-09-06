@@ -27,9 +27,11 @@ I'm a beginner and want to understand what I'm building.
   doesn't know what router I own.
 - Router unreachable should show as "can't tell," not "nobody home."
 - Develop on my laptop, deploy to the Pi. Nothing in the code changes.
-- The Deco runs its own network behind the Xiaomi, so anything connected
-  through it is invisible to us. Deferred until after step 2: either query
-  both boxes and merge, or put the Deco into bridge mode.
+- Two floors, two networks: Xiaomi downstairs, Deco upstairs running its own.
+  Keeping them separate on purpose - people stay on their floor's network, so
+  nothing has to roam. The program queries both boxes and merges the results.
+  One file per router, each answering "which devices can I see"; nothing above
+  them knows there are two.
 
 ## Steps
 1. Get a list of connected devices out of the router and print it.
