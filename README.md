@@ -1,117 +1,91 @@
 # Who's home
 
-A small program that tells me which people in the house are currently home.
+A small web page that shows which people in the house are currently home.
 
-Everyone's phone connects to our WiFi, the router knows which devices are connected, and
-I keep a list matching each device to a person. Phone connected → person home. Runs on
-one always-on machine, asks the router every 30 seconds or so, installs nothing on the
-phones.
+Everyone's phone joins the WiFi, the router knows which devices are connected, and a file
+maps devices to people. Phone connected → person home. Nothing is installed on the phones
+being tracked, and no history is stored - current state only.
 
-Built one step at a time. Each step gets added below.
+Python, Flask, and one reverse-engineered router API.
 
 ---
 
-## Step 1 — get a device list out of the router ✅
+## Getting the data
 
-There's no standard way to ask a router "who's connected?" Every manufacturer invented
-their own, and some don't let you ask at all. So this had to be settled before building
-anything.
+Routers have no standard way to answer "who's connected?" Every manufacturer invented
+their own, and mine - a Xiaomi running MiWiFi firmware - has no public documentation.
 
-### Working out what I'm dealing with
+So I worked it out from the router's own admin page, using the browser's network inspector
+to watch which requests it makes and copy them. Two useful things fell out of that:
 
-| Question | How I asked | Answer |
-|---|---|---|
-| Which box is my PC using as its router? | `Get-NetIPConfiguration` | Me at `192.168.31.201`, gateway `192.168.31.1` |
-| Is that box actually the way out to the internet? | `tracert -d -h 4 8.8.8.8` | Yes — hop 1 is the gateway itself |
-| What make is it? | `curl.exe http://192.168.31.1/` | Page title 小米路由器 ("Xiaomi Router") |
-| Which model, and will it talk without a password? | `api/xqsystem/init_info` | `xiaomi.router.ra72`, firmware `1.0.122`. Answers with no password |
-| How do I ask it for real data? | Chrome, F12 → Network tab, then log in | See below |
+- The login page loads a SHA-1 implementation, which gives away the scheme before you read
+  any code: the password is hashed in the browser and never sent. Reproducing that hash
+  correctly is the whole of the login.
+- Every authenticated request follows one predictable shape, with a session token in the
+  URL - so once you have one request, you have all of them.
 
-The Network tab was the one that mattered. It shows every request the router's own admin
-page makes — so instead of guessing, I watched the page do the work and copied it. Two
-things fell out:
+The result is a login that exchanges a hashed password for a short-lived token, and
+re-authenticates on its own when that token expires.
 
-- **The login page loads `sha1.js`.** A login page only needs a hash function if it plans
-  to scramble the password in the browser and send the result. So the router never
-  receives the actual password — which told me the shape of the login before I wrote any
-  code.
-- **Every logged-in request has the same shape:**
-  `http://192.168.31.1/cgi-bin/luci/;stok=<token>/api/<module>/<question>`
+---
 
-`api/misystem/devicelist` is the one that returns connected devices — `mac`, `name`, `ip`
-and `online` for each.
+## Design
 
-### Two networks, not one
+Four files, each responsible for one thing:
 
-| | Address | What it is |
-|---|---|---|
-| **Xiaomi** | `192.168.31.1` | The real router. Everything reaches the internet through it. |
-| **Deco S7** | `192.168.68.1` | Sold as an extender, but runs its own separate network behind the Xiaomi. |
-
-The Deco shows up on the Xiaomi as one ordinary device at `192.168.31.89`. Anything
-connected *through* it is invisible — the Xiaomi genuinely doesn't know those devices
-exist, it just sees one box using a lot of bandwidth. My PC has moved between the two
-networks on its own, without me touching anything.
-
-### The script
-
-`list_devices.py`. Five things in order:
-
-1. **Reads the password** from the `ROUTER_PASSWORD` environment variable. Never in the
-   file — git remembers everything, so a password committed once is in the history
-   forever.
-2. **Proves I know it, without sending it.** Builds `SHA1(nonce + SHA1(password + salt))`,
-   where the nonce is a one-time string. Only the nonce and the result get sent; the
-   router runs the same sum against what it has stored and compares. The password never
-   leaves this machine. The nonce is there so the same number is never sent twice.
-3. **Gets a token back**, so the password step happens once.
-4. **Asks `devicelist`** with that token.
-5. **Prints** name, IP and MAC per device.
-
-The salt in the code is a fixed string built into MiWiFi firmware — identical on every
-Xiaomi router and published in a JavaScript file anyone can download. It's in the file
-because it genuinely isn't a secret.
-
-### Tests
-
-| Test | Result |
+| File | Responsibility |
 |---|---|
-| No password set | Clear message, nothing else |
-| Wrong password on purpose | Router refused. Proves the request was built right and was actually checked — a malformed request fails differently |
-| WiFi off entirely | Fails instantly, clear message |
-| Pointed at a dead address | Waits 10s for the timeout, then a clear message |
-| Real password | Four devices, including this PC at the address I already knew |
-| iPhone WiFi off, re-ran | Gone immediately. The test that decided the project — the router reports who's connected *now*, not everything it's ever seen |
+| `xiaomi.py` | Everything router-specific - address, login, device list |
+| `presence.py` | Matching devices to people |
+| `web.py` | The web page |
+| `list_devices.py` | A terminal version, useful for watching changes live |
 
-Every failure prints **nothing** about devices. Not an empty list, not a zero — nothing at
-all. "Can't tell" must never look like "nobody home."
+The split follows one rule: **only `xiaomi.py` knows what brand of router is in the
+house.** It returns a plain list of `{"mac", "name"}`, so everything above it is unchanged
+if the hardware changes. Adding a second router is a second file and one line:
 
-### Still open
+```python
+found = xiaomi.devices() + deco.devices()
+```
 
-- **The Deco blind spot.** Deferred, not solved. Either query both boxes and merge the
-  results, or put the Deco into bridge mode so there's only one network. Decide after
-  step 2.
-- **Token expiry.** The token dies eventually. Doesn't matter yet — the script logs in and
-  exits — but a version that runs for days has to notice a rejected token and log in
-  again, without reporting an empty house while it does.
-- **Two devices use invented MAC addresses.** Apple devices make up a MAC per network for
-  privacy. Stable here, so matching devices to people will work — but if someone toggles
-  the private-address setting they get a new one and silently stop being recognised.
-- **Unverified parts of the nonce.** It contains the router's MAC and a timestamp. I don't
-  know whether the router reads either one; I'm copying the format because it works.
-- **Only the polite departure is tested.** Turning WiFi off makes the phone announce it's
-  leaving, so the router drops it instantly — that's why the test was immediate. Actually
-  walking out of the house doesn't announce anything; the phone drifts out of range and
-  the router waits for a timeout before deciding it's gone. That delay is the real lag on
-  the tracker and it's still unmeasured. Step 2 should show it.
+`presence.py` knows nothing about routers *or* about display, which means it can be
+exercised with a hand-written list of devices and no hardware at all.
 
-### Running it
+---
+
+## Decisions worth naming
+
+**"Can't tell" is not "nobody home."** The most dangerous failure here isn't a crash, it's
+a plausible wrong answer. If the router doesn't respond, the page says so explicitly rather
+than rendering an empty list that reads as an empty house. The terminal version applies the
+same rule: a failed poll leaves the previous state untouched instead of reporting that
+everyone left at once.
+
+**Credentials never enter the repository.** The router password is read from the
+environment. The device-to-person mapping is gitignored, with a committed example showing
+the format.
+
+**Nothing is exposed to the internet.** The server only ever listens on the home network.
+Remote access is handled outside the program by a mesh VPN, so the code is identical either
+way and no port is ever opened.
+
+**People, not devices.** Someone with a phone and a laptop connected is home once, not
+twice. The unit of the answer is a person.
+
+**The house has two networks.** A mesh unit upstairs runs its own subnet behind the main
+router, so devices behind it are invisible to it - and the connection only works in one
+direction. Rather than paper over that, the page states which part of the house it can
+currently see.
+
+---
+
+## Running it
 
 ```powershell
 $env:ROUTER_PASSWORD = Read-Host "Router password"
-python list_devices.py
+python web.py
 ```
 
-Typing the password directly with `$env:ROUTER_PASSWORD = "..."` also works, but PowerShell
-saves it to your command history file in plain text. `Read-Host` prompts instead.
+Then open `http://<host>:5000` from any device on the network.
 
+`people.example.json` shows the format for `people.json`.
