@@ -52,6 +52,32 @@ Optional, whenever they matter:
 - Run it on the Pi, starting automatically on boot. Until then it runs on the
   laptop, so it only works while the laptop is on and at home.
 
+## When the Pi arrives
+
+To order, unless a kit already includes them:
+- A Pi 4, 5, or Zero 2 W. Not a Pico - that is a microcontroller with no
+  operating system and cannot run this.
+- microSD card, 32 GB, A1 or A2 rated, known brand. It is the Pi's hard disk.
+- Power supply. Pi 4 needs 5V/3A USB-C, Pi 5 wants 5V/5A. An ordinary phone
+  charger causes random reboots that look like software faults.
+- An SD card reader, if the laptop has no slot.
+
+Setup, in order:
+1. Flash the card with Raspberry Pi Imager. In its settings: set a hostname,
+   enable SSH, and give it the Deco's WiFi - the only network that reaches
+   both routers.
+2. Boot it, then `ssh pi@<hostname>` from the laptop.
+3. Install Tailscale on it first, so it is reachable by name from anywhere
+   and its local address stops mattering.
+4. `pip install flask requests`
+5. `git clone` the repo.
+6. Create people.json by hand. It is gitignored, so cloning does not bring it.
+7. Run web.py by hand, open it from a phone, confirm it works.
+8. Only then make it start on boot.
+
+ROUTER_PASSWORD goes in the service definition, not a shell - otherwise it
+disappears on every reboot.
+
 ## Status
 Step 4. Steps 1 and 3 done: the Xiaomi answers api/misystem/devicelist after a
 hashed-password login, and list_devices.py prints who is home by name.
